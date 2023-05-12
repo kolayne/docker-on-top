@@ -1,7 +1,16 @@
 package main
 
-import "fmt"
+import (
+	"github.com/docker/go-plugins-helpers/volume"
+	"github.com/op/go-logging"
+)
+
+// TODO: set logging format
+var log = logging.MustGetLogger("docker-on-top")
 
 func main() {
-	fmt.Println("Hello there!")
+	log.Info("Hello there!")
+
+	handler := volume.NewHandler(&Driver{volumesCreated: map[string]bool{}})
+	log.Info(handler.ServeUnix("/run/docker/plugins/docker-on-top.sock", 0))
 }
