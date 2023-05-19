@@ -6,8 +6,6 @@ import (
 	"os"
 )
 
-var log *logging.Logger = initLogger()
-
 func initLogger() *logging.Logger {
 	// Define the log format
 	logFormat := logging.MustStringFormatter(
@@ -30,8 +28,9 @@ func initLogger() *logging.Logger {
 	return logging.MustGetLogger("docker-on-top")
 }
 
-func main() {
+var log *logging.Logger = initLogger()
 
+func main() {
 	log.Info("Hello there!")
 
 	handler := volume.NewHandler(&Driver{
