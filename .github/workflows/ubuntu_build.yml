@@ -10,11 +10,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-22.04, ubuntu-20.04 ]
-        
+        # Supporting last 6 versions of go (no particular reason for this value)
+        gover: [ "1.15", "1.16", "1.17", "1.18", "1.19", "1.20" ]
+
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/setup-go@v4.0.1
+        with:
+          go-version: ${{ matrix.gover }}
       - uses: actions/checkout@v3
       - name: Build the project
         run: go build .
