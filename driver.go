@@ -95,8 +95,7 @@ func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, err
 	}
     _, err := overlay.Mount(path, path+"/lower", path+"/upper", 0, 0, []string{"lowerdir=" + path + "/lower,upperdir=" + path + "/upper,work_dir=" + path + "/work_dir"})
 	if err != nil {
-		log.Error("ERROR in overlay:")
-		log.Error(err)
+		log.Errorf("Failed to mount overlay: %w", err)
 		return nil, err
 	}
 	d.volumesCreated[request.Name] = volume.Volume{Name: request.Name, Mountpoint: path + "/upper"}
