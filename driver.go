@@ -24,7 +24,6 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 		log.Debug("Volume already exists. Refusing to create one")
 		return errors.New("volume already exists")
 	} else {
-		log.Debugf("Pretending that the volume was successfully created")
 		d.volumesCreated[request.Name] = volume.Volume{Name: request.Name}
 		d.overlaysCreated[request.Name] = dotBaseDir + request.Name
 		return nil
@@ -75,12 +74,12 @@ func (d *Driver) Path(request *volume.PathRequest) (*volume.PathResponse, error)
 
 func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, error) {
 	log.Debugf("Request Mount: ID=%s, Name=%s", request.ID, request.Name)
-	mountPoint := "/mnt/overlay"
 	lowerdir := dotBaseDir + request.Name + "/lower"
 	upperdir := dotBaseDir + request.Name + "/upper"
 	workdir := dotBaseDir + request.Name + "/workdir"
+	mountpoint := dotBaseDir + request.Name + "/mountpoint"
 
-	for _, dir := range []string{lowerdir, upperdir, workdir} {
+	for _, dir := range []string{lowerdir, upperdir, workdir, mountpoint} {
 		// TODO: create workdir with 000 permission
 		err := os.MkdirAll(dir, os.ModePerm)
 		if err != nil {
@@ -93,15 +92,15 @@ func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, err
 	// TODO: escape commas in directory names
 	data := "lowerdir=" + lowerdir + ",upperdir=" + upperdir + ",workdir=" + workdir
 
-	err := syscall.Mount("docker-on-top_"+request.ID, mountPoint, fstype, 0, data)
+	err := syscall.Mount("docker-on-top_"+request.ID, mountpoint, fstype, 0, data)
 	if err != nil {
 		log.Errorf("Failed to mount %s: %v", request.Name, err)
 		return nil, err
 	}
 
-	d.volumesCreated[request.Name] = volume.Volume{Name: request.Name, Mountpoint: mountPoint}
-	log.Debugf("Mounted volume %s at %s", request.Name, mountPoint)
-	response := volume.MountResponse{Mountpoint: mountPoint}
+	d.volumesCreated[request.Name] = volume.Volume{Name: request.Name, Mountpoint: mountpoint}
+	log.Debugf("Mounted volume %s at %s", request.Name, mountpoint)
+	response := volume.MountResponse{Mountpoint: mountpoint}
 	return &response, nil
 }
 

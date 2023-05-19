@@ -9,7 +9,7 @@ import (
 func initLogger() *logging.Logger {
 	// Define the log format
 	logFormat := logging.MustStringFormatter(
-		"%{color}%{time:2006-01-02 15:04:05.000} %{shortfunc} ▶ %{level:.4s} %{id:03x} %{message}",
+		"%{color}%{time:2006-01-02 15:04:05.000} ▶ %{level:.4s} %{message} (in %{shortfunc})",
 	)
 
 	// Create a log backend that writes to standard error
@@ -38,4 +38,6 @@ func main() {
 		overlaysCreated: map[string]string{},
 	})
 	log.Info(handler.ServeUnix("/run/docker/plugins/docker-on-top.sock", 0))
+
+	// TODO: in case of abrupt termination, delete the socket file
 }
