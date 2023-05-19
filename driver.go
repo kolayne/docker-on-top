@@ -5,6 +5,7 @@ import (
 	"github.com/containers/buildah/pkg/overlay"
 	"github.com/docker/go-plugins-helpers/volume"
 	"os"
+	"syscall"
 )
 
 // Driver contains internal data for the docker-on-top volume driver. It does not export any fields
@@ -72,37 +73,44 @@ func (d *Driver) Path(request *volume.PathRequest) (*volume.PathResponse, error)
 	return &volume.PathResponse{Mountpoint: d.volumesCreated[request.Name].Mountpoint}, nil
 }
 
-/*
-TEST:
-sudo docker volume create --driver docker-on-top test101
-sudo docker run -name ubuntu_bash_101 --mount type=volume,source=test101,destination=/usr -t -i --privileged ubuntu bash
-cd ./usr
-> nex.txt #check if this file appears in overlay_path/upper directory
-sudo docker rm ubuntu_bash_101
-sudo docker volume rm test101
-# check if the /home/VolumeOverlays/test101 was deleted
-*/
+
 func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, error) {
 	log.Debugf("Request Mount: ID=%s, Name=%s", request.ID, request.Name)
-	path := "/home/VolumeOverlays/" + request.Name
-	err1 := os.MkdirAll(path+"/lower", os.ModePerm)
-	err2 := os.MkdirAll(path+"/upper", os.ModePerm)
-	err3 := os.MkdirAll(path+"/work_dir", os.ModePerm)
-	if err1 != nil || err2 != nil || err3 != nil {
-		err := errors.Join(err1, err2, err3)
-		log.Errorf("Failed to mkdir internal overlay directories (lower, upper, work_dir): %w", err)
-		return nil, err
+	mountPoint := "/mnt/overlay"
+	errory := os.MkdirAll(mountPoint, os.ModePerm)
+	if errory != nil {
+		log.Fatalf("Failed to create mount point directory: %v", errory)
 	}
-    _, err := overlay.Mount(path, path+"/lower", path+"/upper", 0, 0, []string{"lowerdir=" + path + "/lower,upperdir=" + path + "/upper,work_dir=" + path + "/work_dir"})
+	lowerdir := "/home/VolumeOverlays/" + request.Name + "/lower"
+	errory = os.MkdirAll(lowerdir, os.ModePerm)
+	if errory != nil {
+		log.Fatalf("Failed to create mount point directory: %v", errory)
+	}
+	upperdir := "/home/VolumeOverlays/" + request.Name + "/upper"
+	errory = os.MkdirAll(upperdir, os.ModePerm)
+	if errory != nil {
+		log.Fatalf("Failed to create mount point directory: %v", errory)
+	}
+	workdir := "/home/VolumeOverlays/" + request.Name + "/workdir"
+	errory = os.MkdirAll(workdir, os.ModePerm)
+	if errory != nil {
+		log.Fatalf("Failed to create mount point directory: %v", errory)
+	}
+	fstype := "overlay"
+	// flags := uintptr(syscall.MS_BIND)
+	flags := uintptr(0)
+	data := "lowerdir=" + lowerdir + ",upperdir=" + upperdir + ",workdir=" + workdir
+
+	var err = syscall.Mount("", mountPoint, fstype, (flags), data)
 	if err != nil {
 		log.Errorf("Failed to mount overlay: %w", err)
 		return nil, err
 	}
-	d.volumesCreated[request.Name] = volume.Volume{Name: request.Name, Mountpoint: path + "/upper"}
-	log.Debugf("Get Mountpoint of Volume: " + d.volumesCreated[request.Name].Mountpoint)
-	response := volume.MountResponse{Mountpoint: d.volumesCreated[request.Name].Mountpoint}
-	return &response, nil
 
+	d.volumesCreated[request.Name] = volume.Volume{Name: request.Name, Mountpoint: mountPoint}
+	log.Debugf("Mounted volume at: %s", mountPoint)
+	response := volume.MountResponse{Mountpoint: mountPoint}
+	return &response, nil
 }
 
 func (d *Driver) Unmount(request *volume.UnmountRequest) error {
