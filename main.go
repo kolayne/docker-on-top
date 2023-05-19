@@ -34,8 +34,7 @@ func main() {
 	log.Info("Hello there!")
 
 	handler := volume.NewHandler(&Driver{
-		volumesCreated:  map[string]volume.Volume{},
-		overlaysCreated: map[string]string{},
+		volumes: map[string]VolumeData{},
 	})
 	log.Info(handler.ServeUnix("/run/docker/plugins/docker-on-top.sock", 0))
 
