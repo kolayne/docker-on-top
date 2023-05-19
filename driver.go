@@ -14,6 +14,7 @@ const dotBaseDir string = "/var/lib/docker-on-top/"
 type VolumeData struct {
 	Name        string
 	BaseDirPath string
+	MountsCount int // The number of containers using the volume at the moment
 }
 
 // Driver contains internal data for the docker-on-top volume driver. It does not export any fields
@@ -30,6 +31,9 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 	if _, ok := d.volumes[request.Name]; ok {
 		log.Debug("Volume already exists. Refusing to create one")
 		return errors.New("volume already exists")
+	} else if strings.ContainsRune(request.Name, '/') {
+		log.Debug("Volume name contains a slash. Volume not created")
+		return errors.New("volume name cannot contain slashes, use the `base` option to specify host path")
 	} else if baseDir, ok := request.Options["base"]; ok {
 		if len(baseDir) < 1 {
 			log.Debug("`base` is empty. Volume not created")
@@ -41,7 +45,7 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 			log.Debug("`base` contains a comma. Volume not created")
 			return errors.New("directories with a comma in the path are currently unsupported")
 		} else {
-			d.volumes[request.Name] = VolumeData{Name: request.Name, BaseDirPath: baseDir}
+			d.volumes[request.Name] = VolumeData{Name: request.Name, BaseDirPath: baseDir, MountsCount: 0}
 			return nil
 		}
 	} else {
@@ -93,10 +97,24 @@ func (d *Driver) Path(request *volume.PathRequest) (*volume.PathResponse, error)
 
 func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, error) {
 	log.Debugf("Request Mount: ID=%s, Name=%s", request.ID, request.Name)
+
+	thisVol := d.volumes[request.Name] // Assuming the volume exists, as the docker daemon was supposed to check that
+
+	mountpoint := d.getMountpoint(request.Name)
+	response := volume.MountResponse{Mountpoint: mountpoint}
+
+	if thisVol.MountsCount > 0 {
+		// Already used in some other container
+		log.Debugf("Volume %s is already mounted for some other container. Indicating success without remounting",
+			request.Name)
+		thisVol.MountsCount += 1
+		d.volumes[request.Name] = thisVol
+		return &response, nil
+	}
+
 	lowerdir := d.volumes[request.Name].BaseDirPath
 	upperdir := dotBaseDir + request.Name + "/upper"
 	workdir := dotBaseDir + request.Name + "/workdir"
-	mountpoint := d.getMountpoint(request.Name)
 
 	for _, dir := range []string{lowerdir, upperdir, workdir, mountpoint} {
 		// TODO: create workdir with 000 permission
@@ -111,24 +129,37 @@ func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, err
 	// TODO: escape commas in directory names
 	data := "lowerdir=" + lowerdir + ",upperdir=" + upperdir + ",workdir=" + workdir
 
-	err := syscall.Mount("docker-on-top_"+request.ID, mountpoint, fstype, 0, data)
+	err := syscall.Mount("docker-on-top_"+request.Name, mountpoint, fstype, 0, data)
 	if err != nil {
 		log.Errorf("Failed to mount %s: %v", request.Name, err)
 		return nil, err
 	}
 
 	log.Debugf("Mounted volume %s at %s", request.Name, mountpoint)
-	response := volume.MountResponse{Mountpoint: mountpoint}
+	thisVol.MountsCount += 1
+	d.volumes[request.Name] = thisVol
 	return &response, nil
 }
 
 func (d *Driver) Unmount(request *volume.UnmountRequest) error {
 	log.Debugf("Request Unmount: ID=%s, Name=%s", request.ID, request.Name)
+	thisVol := d.volumes[request.Name] // Assuming the volume exists, as the docker daemon was supposed to check that
+	if thisVol.MountsCount > 1 {
+		// Volume is still mounted in some other container(s)
+		log.Debugf("Volume %s is still mounted in some other container. Indicating success without unmounting",
+			request.Name)
+		thisVol.MountsCount -= 1
+		d.volumes[request.Name] = thisVol
+		return nil
+	}
+
 	err := syscall.Unmount(d.getMountpoint(request.Name), 0)
 	if err != nil {
 		log.Errorf("Failed to unmount %s: %v", request.Name, err)
 		return err
 	}
+	thisVol.MountsCount -= 1
+	d.volumes[request.Name] = thisVol
 	return nil
 }
 
