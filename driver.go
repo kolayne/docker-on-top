@@ -31,6 +31,9 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 	if _, ok := d.volumes[request.Name]; ok {
 		log.Debug("Volume already exists. Refusing to create one")
 		return errors.New("volume already exists")
+	} else if strings.ContainsRune(request.Name, '/') {
+		log.Debug("Volume name contains a slash. Volume not created")
+		return errors.New("volume name cannot contain slashes, use the `base` option to specify host path")
 	} else if baseDir, ok := request.Options["base"]; ok {
 		if len(baseDir) < 1 {
 			log.Debug("`base` is empty. Volume not created")
