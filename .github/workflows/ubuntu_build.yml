@@ -10,8 +10,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-22.04, ubuntu-20.04 ]
-        # Supporting last 6 versions of go (no particular reason for this value)
-        gover: [ "1.15", "1.16", "1.17", "1.18", "1.19", "1.20" ]
+        # We are using some features added only in go 1.20, that's
+        # why we cannot support any other versions at the moment
+        gover: [ "1.20" ]
 
     runs-on: ${{ matrix.os }}
 
