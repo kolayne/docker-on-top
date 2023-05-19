@@ -85,16 +85,15 @@ sudo docker volume rm test101
 func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, error) {
 	log.Debugf("Request Mount: ID=%s, Name=%s", request.ID, request.Name)
 	path := "/home/VolumeOverlays/" + request.Name
-	err := os.MkdirAll(path, os.ModePerm)
 	err1 := os.MkdirAll(path+"/lower", os.ModePerm)
 	err2 := os.MkdirAll(path+"/upper", os.ModePerm)
 	err3 := os.MkdirAll(path+"/work_dir", os.ModePerm)
-	if (err != nil || err1 != nil || err2 != nil || err3 != nil) && !os.IsExist(err) {
-		log.Error("ERROR in mkdir:")
-		log.Error(err)
+	if err1 != nil || err2 != nil || err3 != nil {
+		err := errors.Join(err1, err2, err3)
+		log.Errorf("Failed to mkdir internal overlay directories (lower, upper, work_dir): %w", err)
 		return nil, err
 	}
-	_, err = overlay.Mount(path, path+"/lower", path+"/upper", 0, 0, []string{"lowerdir=" + path + "/lower,upperdir=" + path + "/upper,work_dir=" + path + "/work_dir"})
+    _, err := overlay.Mount(path, path+"/lower", path+"/upper", 0, 0, []string{"lowerdir=" + path + "/lower,upperdir=" + path + "/upper,work_dir=" + path + "/work_dir"})
 	if err != nil {
 		log.Error("ERROR in overlay:")
 		log.Error(err)
