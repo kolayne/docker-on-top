@@ -2,11 +2,12 @@ package main
 
 import (
 	"errors"
-	"github.com/docker/go-plugins-helpers/volume"
 	"os"
 	"regexp"
 	"strings"
 	"syscall"
+
+	"github.com/docker/go-plugins-helpers/volume"
 )
 
 // The base directory of docker-on-top, where all the overlays' internals will be saved
