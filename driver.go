@@ -4,6 +4,7 @@ import (
 	"errors"
 	"github.com/docker/go-plugins-helpers/volume"
 	"os"
+	"regexp"
 	"strings"
 	"syscall"
 )
@@ -28,12 +29,30 @@ func (d *Driver) getMountpoint(volumeName string) string {
 
 func (d *Driver) Create(request *volume.CreateRequest) error {
 	log.Debugf("Request Create: Name=%s Options=%s", request.Name, request.Options)
+
+	allowedOptions := map[string]bool{"base": true} // For this map only keys are meaningful
+	for opt := range request.Options {
+		if _, ok := allowedOptions[opt]; !ok {
+			log.Debugf("Unknown option %s. Volume not created", opt)
+			return errors.New("Invalid option " + opt)
+		}
+	}
+
+	// This regex is based on the error message from docker daemon when requested to create a volume with invalid name
+	volNameFormat := regexp.MustCompile("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
 	if _, ok := d.volumes[request.Name]; ok {
-		log.Debug("Volume already exists. Refusing to create one")
+		log.Debug("Volume already exists. New volume not created")
 		return errors.New("volume already exists")
-	} else if strings.ContainsRune(request.Name, '/') {
-		log.Debug("Volume name contains a slash. Volume not created")
-		return errors.New("volume name cannot contain slashes, use the `base` option to specify host path")
+	} else if !volNameFormat.MatchString(request.Name) {
+		log.Debug("Volume name doesn't comply to the regex. Volume not created")
+		if strings.ContainsRune(request.Name, '/') {
+			// Handle this case separately for a more specific error message
+			return errors.New("volume name cannot contain slashes (for specifying host path use " +
+				"`-o base=/path/to/base/directory`)")
+		}
+		return errors.New("volume name contains illegal characters: " +
+			"it should comply to \"[a-zA-Z0-9][a-zA-Z0-9_.-]*\"")
 	} else if baseDir, ok := request.Options["base"]; ok {
 		if len(baseDir) < 1 {
 			log.Debug("`base` is empty. Volume not created")
@@ -44,6 +63,9 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 		} else if strings.ContainsRune(baseDir, ',') {
 			log.Debug("`base` contains a comma. Volume not created")
 			return errors.New("directories with a comma in the path are currently unsupported")
+		} else if strings.ContainsRune(baseDir, ':') {
+			log.Debug("`base` contains a colon. Volume not created")
+			return errors.New("directories with a colon in the path are currently unsupported")
 		} else {
 			d.volumes[request.Name] = VolumeData{Name: request.Name, BaseDirPath: baseDir, MountsCount: 0}
 			return nil
