@@ -15,6 +15,7 @@ const dotBaseDir string = "/var/lib/docker-on-top/"
 type VolumeData struct {
 	Name        string
 	BaseDirPath string
+	Volatile    bool
 	MountsCount int // The number of containers using the volume at the moment
 }
 
@@ -25,6 +26,14 @@ type Driver struct {
 
 func (d *Driver) getMountpoint(volumeName string) string {
 	return dotBaseDir + d.volumes[volumeName].Name + "/mountpoint"
+}
+
+func (d *Driver) getUpperdir(volumeName string) string {
+	return dotBaseDir + d.volumes[volumeName].Name + "/upper"
+}
+
+func (d *Driver) getWorkdir(volumeName string) string {
+	return dotBaseDir + d.volumes[volumeName].Name + "/workdir"
 }
 
 // This regex is based on the error message from docker daemon when requested to create a volume with invalid name
@@ -49,7 +58,7 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 			"it should comply to \"[a-zA-Z0-9][a-zA-Z0-9_.-]*\"")
 	}
 
-	allowedOptions := map[string]bool{"base": true} // For this map only keys are meaningful
+	allowedOptions := map[string]bool{"base": true, "volatile": true} // Values are meaningless, only keys matter
 	for opt := range request.Options {
 		if _, ok := allowedOptions[opt]; !ok {
 			log.Debugf("Unknown option %s. Volume not created", opt)
@@ -71,7 +80,22 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 		return errors.New("directories with commas and/or colons in the path are not supported")
 	}
 
-	d.volumes[request.Name] = VolumeData{Name: request.Name, BaseDirPath: baseDir, MountsCount: 0}
+	var volatile bool
+	volatileS, ok := request.Options["volatile"]
+	if !ok {
+		volatileS = "false"
+	}
+	volatileS = strings.ToLower(volatileS)
+	if volatileS == "no" || volatileS == "false" {
+		volatile = false
+	} else if volatileS == "yes" || volatileS == "true" {
+		volatile = true
+	} else {
+		log.Debug("Option `volatile` has an invalid value. Volume not created")
+		return errors.New("option `volatile` must be either 'true', 'false', 'yes', or 'no'")
+	}
+
+	d.volumes[request.Name] = VolumeData{Name: request.Name, BaseDirPath: baseDir, Volatile: volatile, MountsCount: 0}
 	return nil
 }
 
@@ -128,14 +152,14 @@ func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, err
 		// Already used in some other container
 		log.Debugf("Volume %s is already mounted for some other container. Indicating success without remounting",
 			request.Name)
-		thisVol.MountsCount += 1
+		thisVol.MountsCount++
 		d.volumes[request.Name] = thisVol
 		return &response, nil
 	}
 
 	lowerdir := d.volumes[request.Name].BaseDirPath
-	upperdir := dotBaseDir + request.Name + "/upper"
-	workdir := dotBaseDir + request.Name + "/workdir"
+	upperdir := d.getUpperdir(request.Name)
+	workdir := d.getWorkdir(request.Name)
 
 	for _, dir := range []string{lowerdir, upperdir, workdir, mountpoint} {
 		// TODO: create workdir with 000 permission
@@ -157,7 +181,7 @@ func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, err
 	}
 
 	log.Debugf("Mounted volume %s at %s", request.Name, mountpoint)
-	thisVol.MountsCount += 1
+	thisVol.MountsCount++
 	d.volumes[request.Name] = thisVol
 	return &response, nil
 }
@@ -169,7 +193,7 @@ func (d *Driver) Unmount(request *volume.UnmountRequest) error {
 		// Volume is still mounted in some other container(s)
 		log.Debugf("Volume %s is still mounted in some other container. Indicating success without unmounting",
 			request.Name)
-		thisVol.MountsCount -= 1
+		thisVol.MountsCount--
 		d.volumes[request.Name] = thisVol
 		return nil
 	}
@@ -179,9 +203,24 @@ func (d *Driver) Unmount(request *volume.UnmountRequest) error {
 		log.Errorf("Failed to unmount %s: %v", request.Name, err)
 		return err
 	}
-	thisVol.MountsCount -= 1
+
+	// For volatile volume, discard changes on last unmount
+	if thisVol.Volatile {
+		err1 := os.RemoveAll(d.getUpperdir(request.Name))
+		err2 := os.RemoveAll(d.getWorkdir(request.Name))
+		err = errors.Join(err1, err2)
+		if err != nil {
+			log.Errorf("Failed to remove upperdir,workdir for the volatile volume %s: %v", request.Name, err)
+		}
+	}
+
+	// Regardless of error with volatile cleanup, decrement the counter, as it tracks the number of active _mounts_,
+	// and the unmount system call was successful.
+	thisVol.MountsCount--
 	d.volumes[request.Name] = thisVol
-	return nil
+
+	// Report an error during volatility cleanup, if any, but most likely will just be `nil`
+	return err
 }
 
 func (d *Driver) Capabilities() *volume.CapabilitiesResponse {
