@@ -27,8 +27,27 @@ func (d *Driver) getMountpoint(volumeName string) string {
 	return dotBaseDir + d.volumes[volumeName].Name + "/mountpoint"
 }
 
+// This regex is based on the error message from docker daemon when requested to create a volume with invalid name
+var volNameFormat = regexp.MustCompile("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
 func (d *Driver) Create(request *volume.CreateRequest) error {
 	log.Debugf("Request Create: Name=%s Options=%s", request.Name, request.Options)
+
+	if _, ok := d.volumes[request.Name]; ok {
+		log.Debug("Volume already exists. New volume not created")
+		return errors.New("volume already exists")
+	}
+
+	if !volNameFormat.MatchString(request.Name) {
+		log.Debug("Volume name doesn't comply to the regex. Volume not created")
+		if strings.ContainsRune(request.Name, '/') {
+			// Handle this case separately for a more specific error message
+			return errors.New("volume name cannot contain slashes (for specifying host path use " +
+				"`-o base=/path/to/base/directory`)")
+		}
+		return errors.New("volume name contains illegal characters: " +
+			"it should comply to \"[a-zA-Z0-9][a-zA-Z0-9_.-]*\"")
+	}
 
 	allowedOptions := map[string]bool{"base": true} // For this map only keys are meaningful
 	for opt := range request.Options {
@@ -38,42 +57,22 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 		}
 	}
 
-	// This regex is based on the error message from docker daemon when requested to create a volume with invalid name
-	volNameFormat := regexp.MustCompile("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
-
-	if _, ok := d.volumes[request.Name]; ok {
-		log.Debug("Volume already exists. New volume not created")
-		return errors.New("volume already exists")
-	} else if !volNameFormat.MatchString(request.Name) {
-		log.Debug("Volume name doesn't comply to the regex. Volume not created")
-		if strings.ContainsRune(request.Name, '/') {
-			// Handle this case separately for a more specific error message
-			return errors.New("volume name cannot contain slashes (for specifying host path use " +
-				"`-o base=/path/to/base/directory`)")
-		}
-		return errors.New("volume name contains illegal characters: " +
-			"it should comply to \"[a-zA-Z0-9][a-zA-Z0-9_.-]*\"")
-	} else if baseDir, ok := request.Options["base"]; ok {
-		if len(baseDir) < 1 {
-			log.Debug("`base` is empty. Volume not created")
-			return errors.New("`base` option must not be empty")
-		} else if baseDir[0] != '/' {
-			log.Debug("`base` is not an absolute path. Volume not created")
-			return errors.New("`base` must be an absolute path")
-		} else if strings.ContainsRune(baseDir, ',') {
-			log.Debug("`base` contains a comma. Volume not created")
-			return errors.New("directories with a comma in the path are currently unsupported")
-		} else if strings.ContainsRune(baseDir, ':') {
-			log.Debug("`base` contains a colon. Volume not created")
-			return errors.New("directories with a colon in the path are currently unsupported")
-		} else {
-			d.volumes[request.Name] = VolumeData{Name: request.Name, BaseDirPath: baseDir, MountsCount: 0}
-			return nil
-		}
-	} else {
+	baseDir, ok := request.Options["base"]
+	if !ok {
 		log.Debug("No `base` option was provided. Volume not created")
 		return errors.New("`base` option must be provided and set to an absolute path to the base directory on host")
 	}
+
+	if len(baseDir) < 1 || baseDir[0] != '/' {
+		log.Debug("`base` is not an absolute path. Volume not created")
+		return errors.New("`base` must be an absolute path")
+	} else if strings.ContainsRune(baseDir, ',') || strings.ContainsRune(baseDir, ':') {
+		log.Debug("`base` contains a comma or a colon. Volume not created")
+		return errors.New("directories with commas and/or colons in the path are not supported")
+	}
+
+	d.volumes[request.Name] = VolumeData{Name: request.Name, BaseDirPath: baseDir, MountsCount: 0}
+	return nil
 }
 
 func (d *Driver) List() (*volume.ListResponse, error) {
