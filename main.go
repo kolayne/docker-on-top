@@ -1,9 +1,10 @@
 package main
 
 import (
+	"os"
+
 	"github.com/docker/go-plugins-helpers/volume"
 	"github.com/op/go-logging"
-	"os"
 )
 
 func initLogger() *logging.Logger {

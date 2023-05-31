@@ -154,7 +154,7 @@ func (d *Driver) List() (*volume.ListResponse, error) {
 	for volumeName := range d.volumes {
 		response.Volumes = append(response.Volumes, &volume.Volume{Name: volumeName})
 	}
-	log.Debugf("Volumes listed: %s", response.Volumes)
+	log.Debugf("Volumes listed: %v", response.Volumes)
 	return &response, nil
 }
 
@@ -248,12 +248,11 @@ func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, err
 	}
 
 	fstype := "overlay"
-	// TODO: escape commas in directory names
 	data := "lowerdir=" + lowerdir + ",upperdir=" + upperdir + ",workdir=" + workdir
 
 	err = syscall.Mount("docker-on-top_"+request.Name, mountpoint, fstype, 0, data)
 	if err != nil {
-		log.Errorf("Failed to mount %s: %v", request.Name, err)
+		log.Errorf("Failed to mount volume %s: %v", request.Name, err)
 		return nil, err
 	}
 
