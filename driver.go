@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,109 +12,10 @@ import (
 	"github.com/docker/go-plugins-helpers/volume"
 )
 
-func internalError(help string, err error) error {
-	return fmt.Errorf("docker-on-top internal error: %s: %w", help, err)
-}
-
-type VolumeData struct {
-	BaseDirPath string
-	Volatile    bool
-}
-
-/*
-Here is how the internal volume management works.
-
-Each existing volume has a corresponding "main directory" named the same as the volume name and located inside the
-"dot root directory". For example, if the dot root directory is /var/lib/docker-on-top/ and a volume with name FooBar is
-created, that volume's main directory is /var/lib/docker-on-top/FooBar/
-The volume's main directory is created when a volume is created and removed (together with *all* of its contents)
-when the volume is removed.
-
-Inside a volume's main directory there are the following files/directories:
-    - metadata.json  - stores the volume's metadata, which comprises the options it was created with.
-	- activemounts/  - stores information about containers currently using the volume. Each file in it corresponds to
-		a container, the name of the file container+mount ID (received from the docker daemon).
-		On mount/unmount operations, an exclusive lock (via `flock`) is taken on this directory _for the whole process_
-		of mounting/unmounting.
-	- upper/  - the upperdir of an overlay mount. Exists always. For volatile mounts, recreated from scratch on every
-		mount (unless the volume is already mounted to another container). On unmount no special action occurs.
-	- workdir/  - the workdir of an overlay mount. Exists only when the volume is mounted.
-	- mountpoint/  - the directory where the overlay is to be mounted to. Exists only when the volume is mounted.
-*/
-
-// Driver contains internal data for the docker-on-top volume driver. It does not export any fields
-type Driver struct {
-	// dotRootDir is the base directory of docker-on-top, where all the internal information is stored.
-	// Must contain a trailing slash.
-	dotRootDir string
-}
-
-func NewDriver(dotRootDir string) (*Driver, error) {
-	if len(dotRootDir) == 0 {
-		return nil, errors.New("`dotRootDir` cannot be empty")
-	}
-
-	if dotRootDir[len(dotRootDir)-1] != '/' {
-		dotRootDir += "/"
-	}
-
-	err := os.MkdirAll(dotRootDir, os.ModePerm)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Driver{dotRootDir: dotRootDir}, nil
-}
-
-func MustNewDriver(baseDir string) *Driver {
-	driver, err := NewDriver(baseDir)
-	if err != nil {
-		panic(fmt.Errorf("failed to MkdirAll %s: %v", baseDir, err))
-	}
-	return driver
-}
-
-func (d *Driver) activemountsdir(volumeName string) string {
-	return d.dotRootDir + volumeName + "/activemounts/"
-}
-
-func (d *Driver) upperdir(volumeName string) string {
-	return d.dotRootDir + volumeName + "/upper/"
-}
-
-func (d *Driver) workdir(volumeName string) string {
-	return d.dotRootDir + volumeName + "/workdir/"
-}
-
-func (d *Driver) mountpointdir(volumeName string) string {
-	return d.dotRootDir + volumeName + "/mountpoint/"
-}
-
-func (d *Driver) getVolume(volumeName string) (VolumeData, error) {
-	var vol VolumeData
-
-	payload, err := os.ReadFile(d.dotRootDir + volumeName + "/metadata.json")
-	if err == nil {
-		err = json.Unmarshal(payload, &vol)
-	}
-
-	return vol, err
-}
-
-func (d *Driver) writeVolume(volumeName string, volume VolumeData) error {
-	payload, err := json.Marshal(volume)
-
-	if err == nil {
-		err = os.WriteFile(d.dotRootDir+volumeName+"/metadata.json", payload, 0o666)
-	}
-
-	return err
-}
-
 // This regex is based on the error message from docker daemon when requested to create a volume with invalid name
 var volNameFormat = regexp.MustCompile("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
-func (d *Driver) Create(request *volume.CreateRequest) error {
+func (d *DockerOnTop) Create(request *volume.CreateRequest) error {
 	log.Debugf("Request Create: Name=%s Options=%s", request.Name, request.Options)
 
 	if !volNameFormat.MatchString(request.Name) {
@@ -166,42 +66,27 @@ func (d *Driver) Create(request *volume.CreateRequest) error {
 		return errors.New("option `volatile` must be either 'true', 'false', 'yes', or 'no'")
 	}
 
-	if err := os.Mkdir(d.dotRootDir+request.Name, os.ModePerm); err != nil {
+	if err := d.volumeTreeCreate(request.Name); err != nil {
 		if os.IsExist(err) {
 			log.Debug("Volume's main directory already exists. New volume not created")
 			return errors.New("volume already exists")
-		}
-		// Some other error - not expected
-		log.Errorf("Failed to Mkdir main directory: %v. Volume not created", err)
-		return internalError("failed to Mkdir volume main directory", err)
-	}
-
-	// Try to create upperdir. On failure, revert the creation of the volume main directory
-	for _, dir := range []string{d.upperdir(request.Name), d.activemountsdir(request.Name)} {
-		if err := os.Mkdir(dir, os.ModePerm); err != nil {
-			log.Errorf("Failed to Mkdir internal directory: %v. Removing the volume", request.Name, err)
-			cleanupErr := os.RemoveAll(d.dotRootDir + request.Name)
-			if cleanupErr != nil {
-				log.Errorf("Failed to RemoveAll main directory: %v", d.dotRootDir+request.Name, cleanupErr)
-			}
-			return internalError("failed to Mkdir internal directories", err)
+		} else {
+			// Already logged and wrapped `internalError` by `d.volumeTreeCreate`
+			return err
 		}
 	}
 
-	if err := d.writeVolume(request.Name, VolumeData{BaseDirPath: baseDir, Volatile: volatile}); err != nil {
-		log.Errorf("Failed to write metadata for volume %s: %v", request.Name, err)
-		// TODO: duplication here
-		cleanupErr := os.RemoveAll(d.dotRootDir + request.Name)
-		if cleanupErr != nil {
-			log.Errorf("Failed to RemoveAll main directory: %v", d.dotRootDir+request.Name, cleanupErr)
-		}
+	if err := d.writeVolumeInfo(request.Name, VolumeInfo{BaseDirPath: baseDir, Volatile: volatile}); err != nil {
+		log.Errorf("Failed to write metadata for volume %s: %v. Aborting volume creation (attempting "+
+			"to destroy the volume's tree)", request.Name, err)
+		_ = d.volumeTreeDestroy(request.Name) // The errors are logged, if any
 		return internalError("failed to store metadata for the volume", err)
 	}
 
 	return nil
 }
 
-func (d *Driver) List() (*volume.ListResponse, error) {
+func (d *DockerOnTop) List() (*volume.ListResponse, error) {
 	log.Debug("Request List")
 
 	var response volume.ListResponse
@@ -217,7 +102,7 @@ func (d *Driver) List() (*volume.ListResponse, error) {
 	return &response, nil
 }
 
-func (d *Driver) Get(request *volume.GetRequest) (*volume.GetResponse, error) {
+func (d *DockerOnTop) Get(request *volume.GetRequest) (*volume.GetResponse, error) {
 	log.Debugf("Request Get: Name=%s", request.Name)
 
 	// Note: the implementation does not  ensure that `d.dotRootDir + request.Name` is a file or a directory.
@@ -238,7 +123,7 @@ func (d *Driver) Get(request *volume.GetRequest) (*volume.GetResponse, error) {
 	}
 }
 
-func (d *Driver) Remove(request *volume.RemoveRequest) error {
+func (d *DockerOnTop) Remove(request *volume.RemoveRequest) error {
 	log.Debugf("Request Remove: Name=%s. It will succeed regardless of the presence of the volume", request.Name)
 
 	// Expecting the volume to have been unmounted by this moment. If it isn't, the error will be reported
@@ -250,16 +135,16 @@ func (d *Driver) Remove(request *volume.RemoveRequest) error {
 	return nil
 }
 
-func (d *Driver) Path(request *volume.PathRequest) (*volume.PathResponse, error) {
+func (d *DockerOnTop) Path(request *volume.PathRequest) (*volume.PathResponse, error) {
 	log.Debugf("Request Path: Name=%s", request.Name)
 	return &volume.PathResponse{Mountpoint: d.mountpointdir(request.Name)}, nil
 }
 
-func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, error) {
+func (d *DockerOnTop) Mount(request *volume.MountRequest) (*volume.MountResponse, error) {
 	log.Debugf("Request Mount: ID=%s, Name=%s", request.ID, request.Name)
 
 	// Assuming the volume exists, as the docker daemon was supposed to check that
-	thisVol, err := d.getVolume(request.Name)
+	thisVol, err := d.getVolumeInfo(request.Name)
 	if err != nil {
 		log.Errorf("Failed to retrieve metadata for volume %s: %v", request.Name, err)
 		return nil, internalError("failed to retrieve the volume's metadata", err)
@@ -289,49 +174,10 @@ func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, err
 		upperdir := d.upperdir(request.Name)
 		workdir := d.workdir(request.Name)
 
-		err1 := os.Mkdir(mountpoint, os.ModePerm)
-		if os.IsExist(err1) {
-			log.Warningf("Mountpoint of %s already exists. It usually means that the overlay is already mounted "+
-				"but the plugin failed to detect it. Trying to proceed anyway", request.Name)
-		}
-		err2 := os.Mkdir(workdir, os.ModePerm)
-		if os.IsExist(err2) {
-			log.Warningf("Workdir of %s already exists. It usually means that the overlay is already mounted but "+
-				"the plugin failed to detect it. Trying to proceed anyway", request.Name)
-		}
-		err = errors.Join(err1, err2)
-		if (err1 != nil && !os.IsExist(err1)) || (err2 != nil && !os.IsExist(err2)) {
-			log.Errorf("Failed to Mkdir mountpoint, workdir: %v, %v", err1, err2)
-
-			// Attempt to clean up
-			if err1 == nil {
-				cleanupErr := os.Remove(mountpoint)
-				if cleanupErr != nil {
-					log.Errorf("Failed to cleanup mountpoint: %v", cleanupErr)
-				}
-			}
-			if err2 == nil {
-				cleanupErr := os.Remove(workdir)
-				if cleanupErr != nil {
-					log.Errorf("Failed to cleanup workdir: %v", cleanupErr)
-				}
-			}
-
-			return nil, internalError("failed to prepare internal directories", err)
-		}
-
-		// For volatile volume, discard previous changes
-		if thisVol.Volatile {
-			err = os.RemoveAll(upperdir)
-			if err != nil {
-				log.Errorf("Failed to RemoveAll upperdir (for volatile): %v", err)
-				return nil, internalError("failed to discard previous changes", err)
-			}
-			err = os.Mkdir(upperdir, os.ModePerm)
-			if err != nil {
-				log.Errorf("Failed to Mkdir upperdir (for volatile): %v", err)
-				return nil, internalError("failed to recreate upperdir", err)
-			}
+		err = d.volumeTreePreMount(request.Name, thisVol.Volatile)
+		if err != nil {
+			// Already logged and wrapped in `internalError` by `d.volumeTreePreMount`
+			return nil, err
 		}
 
 		fstype := "overlay"
@@ -381,13 +227,13 @@ func (d *Driver) Mount(request *volume.MountRequest) (*volume.MountResponse, err
 	return &response, nil
 }
 
-func (d *Driver) Unmount(request *volume.UnmountRequest) error {
+func (d *DockerOnTop) Unmount(request *volume.UnmountRequest) error {
 	log.Debugf("Request Unmount: ID=%s, Name=%s", request.ID, request.Name)
 
 	// Assuming the volume exists, as the docker daemon was supposed to check that
 
 	// Synchronization. Taking an exclusive lock on activemounts/ so that parallel mounts/unmounts don't interfere.
-	// For more details, read the comment in the beginning of `Driver.Mount`
+	// For more details, read the comment in the beginning of `DockerOnTop.Mount`
 	var activemountsdir lockedFile
 	err := activemountsdir.Open(d.activemountsdir(request.Name))
 	if err != nil {
@@ -406,15 +252,8 @@ func (d *Driver) Unmount(request *volume.UnmountRequest) error {
 			return err
 		}
 
-		err1 := os.Remove(d.mountpointdir(request.Name))
-		err2 := os.RemoveAll(d.workdir(request.Name))
-		err = errors.Join(err1, err2)
-		if err != nil {
-			log.Errorf("Cleanup of %s failed. Errors for mountpoint, workdir: %v, %v",
-				request.Name, err1, err2)
-			// Don't return yet. The error will be returned later
-		}
-		err = internalError("failed to cleanup on unmount", err)
+		err = d.volumeTreePostUnmount(request.Name)
+		// Don't return yet. The above error will be returned later
 	} else if readDirErr == nil {
 		log.Debugf("Volume %s is still mounted in some other container. Indicating success without unmounting",
 			request.Name)
@@ -441,11 +280,11 @@ func (d *Driver) Unmount(request *volume.UnmountRequest) error {
 			"manually to fix the problem", err)
 	}
 
-	// Report an error during cleanup, if any, but most likely will just be `nil`
+	// Report an error during cleanup, if any
 	return err
 }
 
-func (d *Driver) Capabilities() *volume.CapabilitiesResponse {
+func (d *DockerOnTop) Capabilities() *volume.CapabilitiesResponse {
 	log.Debug("Request Capabilities: plugin discovery")
 	return &volume.CapabilitiesResponse{Capabilities: volume.Capability{Scope: "volume"}}
 }

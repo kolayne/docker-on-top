@@ -5,10 +5,17 @@ import (
 	"syscall"
 )
 
+// lockedFile is a wrapper around `os.File` which overrides the `Open` and `Close` methods so that the file being
+// accessed is exclusively locked (via `flock(..., LOCK_EX)`).
 type lockedFile struct {
 	*os.File
 }
 
+// Open opens the file as in `os.Open` and then lock the file in exclusive mode via `flock(..., LOCK_EX)`,
+// possibly blocking.
+//
+// If an error occurs in either step, it is reported and the internals are cleaned up (i.e. no need for the caller to
+// call `.Close()`), otherwise the object must be `.Close()`d to release the lock and the file descriptor.
 func (lf *lockedFile) Open(path string) error {
 	var err error
 	lf.File, err = os.Open(path)
@@ -18,13 +25,15 @@ func (lf *lockedFile) Open(path string) error {
 	}
 	err = syscall.Flock(int(lf.File.Fd()), syscall.LOCK_EX)
 	if err != nil {
-		// `syscall.Flock` operates on file descriptor, so the error won't contain the file path, thus adding it manually
 		log.Errorf("Failed to get exclusive lock on %s: %v", lf.File.Name(), err)
+		// `syscall.Flock` operates on file descriptor, so the error won't contain the file path, thus adding it manually
+		lf.File.Close() // An error is going to be returned, so the caller won't call `.Close()`
 		return internalError("failed to get exclusive Flock", err)
 	}
 	return nil
 }
 
+// Close releases the lock on the underlying file and closes the file using its original `.Close()`
 func (lf *lockedFile) Close() error {
 	defer lf.File.Close()
 	err := syscall.Flock(int(lf.File.Fd()), syscall.LOCK_UN)
