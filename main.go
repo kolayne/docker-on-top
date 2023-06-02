@@ -36,9 +36,7 @@ func main() {
 
 	log.Info("Hello there!")
 
-	handler := volume.NewHandler(&Driver{
-		volumes: map[string]VolumeData{},
-	})
+	handler := volume.NewHandler(MustNewDriver("/var/lib/docker-on-top/"))
 	log.Info(handler.ServeUnix("/run/docker/plugins/docker-on-top.sock", 0))
 
 	// TODO: in case of abrupt termination, delete the socket file
