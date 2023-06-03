@@ -42,6 +42,40 @@ func (d *DockerOnTop) mountpointdir(volumeName string) string {
 	return d.dotRootDir + volumeName + "/mountpoint/"
 }
 
+// volumeTreeOnBootReset resets the volume's tree, which is useful in case the plugin was restarted or the system
+// rebooted without proper volume cleanup.
+//
+// The function first attempts to remove mountpoint/, then recreates the activemounts/ directory (all previous active
+// mounts are discarded), then recursively removes the workdir/ directory.
+//
+// If in the above process an error such that `os.IsNotExist(err)` occurs, it is ignored and the reset process is
+// continued; if any other error occurs, the reset process is interrupted and the error is retuend (but not logged).
+//
+// In particular, in case the overlay is mounted for the volume (e.g. if the plugin was restarted without a machine
+// reboot), the very first operation fails with an error such that `errors.Is(err, syscall.EBUSY)` and further
+// actions are not performed, so the volume state remains valid.
+func (d *DockerOnTop) volumeTreeOnBootReset(volumeName string) error {
+	err := os.Remove(d.mountpointdir(volumeName))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	activemountsdir := d.activemountsdir(volumeName)
+	err = os.RemoveAll(activemountsdir)
+	if err != nil && !os.IsNotExist(err) { // `os.ErrNotExist` is impossible here, `RemoveAll` succeeds in this case
+		return err
+	}
+	err = os.Mkdir(activemountsdir, os.ModePerm)
+	if err != nil && !os.IsNotExist(err) { // `os.ErrNotExist` is theoretically possible here but extremely unlikely
+		return err
+	}
+	err = os.RemoveAll(d.workdir(volumeName))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	return nil
+}
+
 // volumeTreeCreate creates a directory tree for the specified volume (but not metadata.json).
 //
 // If errors occur, they are logged and the returned error is wrapped with `internalError`, except when volume already
@@ -153,7 +187,7 @@ func (d *DockerOnTop) volumeTreePreMount(volumeName string, discardUpper bool) e
 // Removal of both directories is attempted regardless of errors with the other directory. Errors, if any, are logged,
 // combined with `errors.Join` and returned (wrapped with `internalError`).
 //
-// Note: for technical reasons, the absense of the workdir directory is not considered an error.
+// Note: for technical reasons, the absence of the workdir directory is not considered an error.
 func (d *DockerOnTop) volumeTreePostUnmount(volumeName string) error {
 	err1 := os.Remove(d.mountpointdir(volumeName))
 	err2 := os.RemoveAll(d.workdir(volumeName))

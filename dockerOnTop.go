@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 )
 
 // internalError wraps the given error in the "docker-on-top internal error: #{help}: #{err}" message. It is useful for
@@ -15,7 +16,9 @@ func internalError(help string, err error) error {
 }
 
 // DockerOnTop contains internal data of the docker-on-top volume driver and implements the `volume.Driver` interface
-// (from docker's go-plugins-helpers)
+// (from docker's go-plugins-helpers).
+//
+// **MUST BE** created with `NewDockerOnTop` only.
 type DockerOnTop struct {
 	// dotRootDir is the base directory of docker-on-top, where all the internal information is stored.
 	// Must contain a trailing slash.
@@ -38,14 +41,35 @@ func NewDockerOnTop(dotRootDir string) (*DockerOnTop, error) {
 		return nil, err
 	}
 
-	return &DockerOnTop{dotRootDir: dotRootDir}, nil
+	entries, err := os.ReadDir(dotRootDir)
+	if err != nil {
+		return nil, err
+	}
+
+	dot := DockerOnTop{dotRootDir: dotRootDir}
+
+	for _, entry := range entries {
+		volumeName := entry.Name()
+		resetErr := dot.volumeTreeOnBootReset(volumeName)
+		if resetErr == nil {
+			log.Debugf("Successfully reset volume %s on boot", volumeName)
+		} else if errors.Is(resetErr, syscall.EBUSY) {
+			log.Infof("Detected an overlay mounted for volume %s. Skipped active mounts reset for it",
+				volumeName)
+		} else {
+			log.Errorf("Failed to reset volume %s on boot: %v", volumeName, resetErr)
+			return nil, resetErr
+		}
+	}
+
+	return &dot, nil
 }
 
 // MustNewDockerOnTop behaves as `NewDockerOnTop` but panics in case of an error
 func MustNewDockerOnTop(baseDir string) *DockerOnTop {
 	driver, err := NewDockerOnTop(baseDir)
 	if err != nil {
-		panic(fmt.Errorf("failed to MkdirAll %s: %v", baseDir, err))
+		panic(fmt.Errorf("the call NewDockerOnTop(%+v) failed: %v", baseDir, err))
 	}
 	return driver
 }

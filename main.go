@@ -32,8 +32,6 @@ func initLogger() *logging.Logger {
 var log *logging.Logger = initLogger()
 
 func main() {
-	// TODO: cleanup active mounts before starting
-
 	log.Info("Hello there!")
 
 	handler := volume.NewHandler(MustNewDockerOnTop("/var/lib/docker-on-top/"))
