@@ -10,7 +10,7 @@ import (
 func initLogger() *logging.Logger {
 	// Define the log format
 	logFormat := logging.MustStringFormatter(
-		"%{color}%{time:2006-01-02 15:04:05.000} ▶ %{level:.4s} %{message} (in %{shortfunc})",
+		"%{color:reset}%{color}%{time:2006-01-02 15:04:05.000} ▶ %{level:.4s} %{message} [in %{shortfunc}]",
 	)
 
 	// Create a log backend that writes to standard error
@@ -32,10 +32,12 @@ func initLogger() *logging.Logger {
 var log *logging.Logger = initLogger()
 
 func main() {
-	log.Info("Hello there!")
+	dotRootDir := "/var/lib/docker-on-top/"
+	socketPath := "/run/docker/plugins/docker-on-top.sock"
 
-	handler := volume.NewHandler(MustNewDockerOnTop("/var/lib/docker-on-top/"))
-	log.Info(handler.ServeUnix("/run/docker/plugins/docker-on-top.sock", 0))
+	handler := volume.NewHandler(MustNewDockerOnTop(dotRootDir))
+	log.Infof("Serving at %s", socketPath)
+	log.Critical(handler.ServeUnix(socketPath, 0))
 
 	// TODO: in case of abrupt termination, delete the socket file
 }

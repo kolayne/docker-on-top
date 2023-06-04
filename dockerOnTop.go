@@ -21,12 +21,13 @@ func internalError(help string, err error) error {
 // **MUST BE** created with `NewDockerOnTop` only.
 type DockerOnTop struct {
 	// dotRootDir is the base directory of docker-on-top, where all the internal information is stored.
-	// Must contain a trailing slash.
+	// Must contain a trailing slash (ensured by `NewDockerOnTop`).
 	dotRootDir string
 }
 
 // NewDockerOnTop creates a new `DockerOnTop` object using the given directory as the dot root directory. If it doesn't
-// exist, it is created as in `mkdir -p`. On error, it is returned and `DockerOnTop` is not created.
+// exist, it is created recursively (as if with `mkdir -p`). If an error occurs, it is returned and `DockerOnTop`
+// is not created.
 func NewDockerOnTop(dotRootDir string) (*DockerOnTop, error) {
 	if len(dotRootDir) == 0 {
 		return nil, errors.New("`dotRootDir` cannot be empty")
@@ -41,13 +42,14 @@ func NewDockerOnTop(dotRootDir string) (*DockerOnTop, error) {
 		return nil, err
 	}
 
+	dot := DockerOnTop{dotRootDir: dotRootDir}
+
 	entries, err := os.ReadDir(dotRootDir)
 	if err != nil {
 		return nil, err
 	}
 
-	dot := DockerOnTop{dotRootDir: dotRootDir}
-	wereMountedCount := 0
+	mountedOverlaysFound := false
 	for _, entry := range entries {
 		volumeName := entry.Name()
 		err = dot.volumeTreeOnBootReset(volumeName)
@@ -57,14 +59,14 @@ func NewDockerOnTop(dotRootDir string) (*DockerOnTop, error) {
 			log.Infof("Detected volume %s. The state is clean", volumeName)
 		} else if errors.Is(err, syscall.EBUSY) {
 			log.Infof("Detected volume %s. The state is dirty: it is still mounted", volumeName)
-			wereMountedCount++
+			mountedOverlaysFound = true
 		} else {
 			log.Errorf("Failed to reset volume %s on boot: %v", volumeName, err)
 			return nil, err
 		}
 	}
 
-	if wereMountedCount > 0 {
+	if mountedOverlaysFound {
 		// Not sure which message is better, keeping both for now
 		/*
 			log.Warning("Some of the detected volumes (mentioned above as INFO logs) were already mounted when the " +
@@ -75,7 +77,7 @@ func NewDockerOnTop(dotRootDir string) (*DockerOnTop, error) {
 		*/
 		log.Warning("Some of the detected volumes were already mounted when the plugin started. If the " +
 			"plugin's downtime was <=60sec or you know that no containers with mounted dirty volumes have exited " +
-			"while the plugin was down, there's no problem. Otherwise the aforementioned (as INFO logs) volumes " +
+			"while the plugin was down, there's no problem. Otherwise the volumes mentioned above (as INFO logs) " +
 			"might get stuck in the mounted state, and for volatile volumes it prevents their changes from being " +
 			"discarded. In any case, the machine reboot will fix everything")
 	}
@@ -84,10 +86,10 @@ func NewDockerOnTop(dotRootDir string) (*DockerOnTop, error) {
 }
 
 // MustNewDockerOnTop behaves as `NewDockerOnTop` but panics in case of an error
-func MustNewDockerOnTop(baseDir string) *DockerOnTop {
-	driver, err := NewDockerOnTop(baseDir)
+func MustNewDockerOnTop(dotRootDir string) *DockerOnTop {
+	driver, err := NewDockerOnTop(dotRootDir)
 	if err != nil {
-		panic(fmt.Errorf("the call NewDockerOnTop(%+v) failed: %v", baseDir, err))
+		panic(fmt.Errorf("the call NewDockerOnTop(%+v) failed: %v", dotRootDir, err))
 	}
 	return driver
 }
