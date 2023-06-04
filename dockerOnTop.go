@@ -47,19 +47,37 @@ func NewDockerOnTop(dotRootDir string) (*DockerOnTop, error) {
 	}
 
 	dot := DockerOnTop{dotRootDir: dotRootDir}
-
+	wereMountedCount := 0
 	for _, entry := range entries {
 		volumeName := entry.Name()
-		resetErr := dot.volumeTreeOnBootReset(volumeName)
-		if resetErr == nil {
-			log.Debugf("Successfully reset volume %s on boot", volumeName)
-		} else if errors.Is(resetErr, syscall.EBUSY) {
-			log.Infof("Detected an overlay mounted for volume %s. Skipped active mounts reset for it",
-				volumeName)
+		err = dot.volumeTreeOnBootReset(volumeName)
+		if err == nil {
+			log.Infof("Detected volume %s. The state was dirty, cleaned successfully", volumeName)
+		} else if os.IsNotExist(err) {
+			log.Infof("Detected volume %s. The state is clean", volumeName)
+		} else if errors.Is(err, syscall.EBUSY) {
+			log.Infof("Detected volume %s. The state is dirty: it is still mounted", volumeName)
+			wereMountedCount++
 		} else {
-			log.Errorf("Failed to reset volume %s on boot: %v", volumeName, resetErr)
-			return nil, resetErr
+			log.Errorf("Failed to reset volume %s on boot: %v", volumeName, err)
+			return nil, err
 		}
+	}
+
+	if wereMountedCount > 0 {
+		// Not sure which message is better, keeping both for now
+		/*
+			log.Warning("Some of the detected volumes (mentioned above as INFO logs) were already mounted when the " +
+				"plugin started. If some of the containers using it have exited and there's been over 60sec after that " +
+				"while the plugin was down, those volumes are now stuck in the mounted state until you reboot your " +
+				"machine. For non-volatile volumes it's not too bad, for volatile volumes it means their changes won't " +
+				"be discarded on container exit (they effectively lose their volatility until a reboot).")
+		*/
+		log.Warning("Some of the detected volumes were already mounted when the plugin started. If the " +
+			"plugin's downtime was <=60sec or you know that no containers with mounted dirty volumes have exited " +
+			"while the plugin was down, there's no problem. Otherwise the aforementioned (as INFO logs) volumes " +
+			"might get stuck in the mounted state, and for volatile volumes it prevents their changes from being " +
+			"discarded. In any case, the machine reboot will fix everything")
 	}
 
 	return &dot, nil

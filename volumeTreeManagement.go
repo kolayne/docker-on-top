@@ -48,15 +48,18 @@ func (d *DockerOnTop) mountpointdir(volumeName string) string {
 // The function first attempts to remove mountpoint/, then recreates the activemounts/ directory (all previous active
 // mounts are discarded), then recursively removes the workdir/ directory.
 //
-// If in the above process an error such that `os.IsNotExist(err)` occurs, it is ignored and the reset process is
-// continued; if any other error occurs, the reset process is interrupted and the error is retuend (but not logged).
+// If an error occurs in any of the steps, the reset is not continued and the error is returned (but not logged).
+// An error satisfying `os.IsNotExist(err)` is an exception: it is only respected in the first step of the process
+// (that is, if mountpoint/ does not exist, no further actions are performed and a corresponding error is returned) but
+// on the rest of the steps this error is suppressed (e.g. the absence of activemounts/ or workdir/ is not considered an
+// error and is not reported).
 //
-// In particular, in case the overlay is mounted for the volume (e.g. if the plugin was restarted without a machine
-// reboot), the very first operation fails with an error such that `errors.Is(err, syscall.EBUSY)` and further
-// actions are not performed, so the volume state remains valid.
+// Note that in case an overlay is mounted for the volume (e.g. if the plugin is restarted without a machine reboot),
+// the first operation fails with `syscall.EBUSY` and further actions are not performed, so the volume state remains
+// valid.
 func (d *DockerOnTop) volumeTreeOnBootReset(volumeName string) error {
 	err := os.Remove(d.mountpointdir(volumeName))
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil {
 		return err
 	}
 	activemountsdir := d.activemountsdir(volumeName)
