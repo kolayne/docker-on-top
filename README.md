@@ -78,7 +78,7 @@ containers using it at the same time but, _unlike_ the usual ones,
 **discards the changes made to it** after the last container using the volume
 is unmounted. Here's an example:
 
-```shell
+```
 $ # First, use a usual (non-volatile) volume
 $ docker volume create --driver docker-on-top usual-volume -o base=/
 usual-volume
