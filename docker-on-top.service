@@ -1,0 +1,13 @@
+[Unit]
+Description=Docker plugin that implements the docker-on-top volume driver
+Before=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/docker-on-top
+User=root
+# Using Group=root, not Group=docker, because the gid that dot uses for its socket is hardcoded to 0
+Group=root
+
+[Install]
+WantedBy=docker.service
