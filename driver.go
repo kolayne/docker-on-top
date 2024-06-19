@@ -170,11 +170,12 @@ func (d *DockerOnTop) Mount(request *volume.MountRequest) (*volume.MountResponse
 	mountpoint := d.mountpointdir(request.Name)
 	response := volume.MountResponse{Mountpoint: mountpoint}
 
-	// Synchronization. Take an exclusive lock on the activemounts/ dir to ensure that no parallel mounts/unmounts
-	// interfere. Note that it is crucial that the lock is hold not only during the checks on other containers
-	// using the volume, but until a complete mount/unmount is performed: if, instead, we unlocked after finding that
-	// we are the first mount request (thus responsible to mount) but before actually mounting, another thread will
-	// see that the volume is already in use and assume it is mounted (while it isn't yet), which is a race condition.
+	// Synchronization. Take an exclusive lock on the activemounts/ dir of the volume to ensure that no parallel
+	// mounts/unmounts interfere. Note that it is crucial that the lock is held not only during the checks on other
+	// containers using the volume, but until a complete mount/unmount is performed: if, instead, we unlocked after
+	// finding that we are the first mount request (thus responsible to mount) but before actually mounting, another
+	// thread will see that the volume is already in use and assume it is mounted (while it isn't yet),
+	// which is a race condition.
 	var activemountsdir lockedFile
 	err = activemountsdir.Open(d.activemountsdir(request.Name))
 	if err != nil {
@@ -261,8 +262,9 @@ func (d *DockerOnTop) Unmount(request *volume.UnmountRequest) error {
 
 	// Assuming the volume exists: the docker daemon won't let remove a volume that is still mounted
 
-	// Synchronization. Taking an exclusive lock on activemounts/ so that parallel mounts/unmounts don't interfere.
-	// For more details, read the comment in the beginning of `DockerOnTop.Mount`
+	// Synchronization. Taking an exclusive lock on activemounts/ of the volume so that parallel mounts/unmounts
+	// don't interfere.
+	// For more details, read the comment in the beginning of `DockerOnTop.Mount`.
 	var activemountsdir lockedFile
 	err := activemountsdir.Open(d.activemountsdir(request.Name))
 	if err != nil {
