@@ -1,4 +1,4 @@
-module docker-on-top
+module github.com/kolayne/docker-on-top
 
 go 1.20
 
