@@ -1,0 +1,67 @@
+name: Build on ubuntu and maybe release
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    env:
+      RELEASE_OS: ubuntu-24.04
+      RELEASE_GOVER: "1.22"
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, ubuntu-22.04, ubuntu-20.04 ]
+        gover: [ "1.22", "1.21", "1.20" ]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.gover }}
+      - name: Build the project
+        run: go build .
+      - name: Save built binary
+        if: startsWith(github.ref, 'refs/tags/') && matrix.os == env.RELEASE_OS && matrix.gover == env.RELEASE_GOVER
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact
+          path: ./docker-on-top
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare release notes
+        run: |
+          # Assert that the changelog begins with this release
+          head -1 CHANGELOG.md | grep -E "^# ${{ github.ref_name }}$"
+          # Extract the part of changelog for this release (until next first-level heading)
+          # +4 is to skip the release heading and date
+          tail -n +4 CHANGELOG.md | sed '/^# /q' | head -n-1 > this-changelog.md
+      - name: Restore built binary
+        uses: actions/download-artifact@v4
+        with:
+          name: artifact
+          path: ./
+      - name: Release new version
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ./this-changelog.md
+          fail_on_unmatched_files: true
+          files: |
+            ./docker-on-top
+            ./docker-on-top.service
