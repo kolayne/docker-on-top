@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"os"
 
 	"github.com/docker/go-plugins-helpers/volume"
@@ -31,7 +32,12 @@ func initLogger() *logging.Logger {
 
 var log *logging.Logger = initLogger()
 
+//go:embed docker-on-top_version.txt
+var Version []byte
+
 func main() {
+	log.Infof("Starting docker-on-top v%s", string(Version))
+
 	dotRootDir := "/var/lib/docker-on-top/"
 	socketPath := "/run/docker/plugins/docker-on-top.sock"
 

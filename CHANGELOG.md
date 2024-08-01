@@ -4,6 +4,7 @@ TODO: date
 
 -   Added release script
 -   Added CI for creating releases
+-   Included package version in the executable binary
 
 # v0.1.0
 
