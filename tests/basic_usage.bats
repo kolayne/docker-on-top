@@ -1,5 +1,8 @@
 #!/usr/bin/env bats
 
+# For `CONTAINER_CMD_*`
+load common.sh
+
 basic_test() {
 	# Setup
 	BASE="$(mktemp --directory)"
@@ -18,23 +21,11 @@ basic_test() {
 	echo 456 > "$BASE"/b
 
 	docker run --rm -v "$NAME":/dot alpine:latest \
-		sh -e -c '
-			# Initial data is visible
-			[ "$(cat /dot/a)" = 123 ]
-			[ "$(cat /dot/b)" = 456 ]
+		sh -e -c "
+			$CONTAINER_CMD_CHECK_INITIAL_DATA
 
-			# My file removal is visible to me
-			rm /dot/a
-			[ ! -e /dot/a ]
-
-			# My changes are visible to me
-			echo 789 > /dot/b
-			[ "$(cat /dot/b)" = 789 ]
-
-			# My new files are visible to me
-			echo etc > /dot/c
-			[ "$(cat /dot/c)" = etc ]
-		'
+			$CONTAINER_CMD_MAKE_AND_CHECK_CHANGES
+		"
 
 	# Changes are not visible from the host
 	[ "$(cat "$BASE"/a)" = 123 ]
