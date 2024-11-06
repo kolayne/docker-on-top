@@ -69,6 +69,12 @@ sudo systemctl enable docker-on-top.service  # If you want the plugin to be auto
 That's it. After these actions you can manage the plugin as a systemd service with
 commands like `systemctl start`, `systemctl stop`, etc.
 
+## Integration tests
+
+To run integration tests, set up [bats](https://github.com/bats-core/bats-core), start
+the version of docker-on-top that you want to test (e.g., build from source and start),
+then, from the project root directory, run `bats tests/`.
+
 ## Volatile volumes
 
 (note: volatile volumes have nothing to do with overlayfs's "volatile mount")
