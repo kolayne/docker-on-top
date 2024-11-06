@@ -1,6 +1,6 @@
-# Future release
+# v0.1.1
 
-TODO: date
+2024.11.06
 
 -   Added release script
 -   Added CI for creating releases
