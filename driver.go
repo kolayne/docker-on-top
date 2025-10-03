@@ -141,10 +141,41 @@ func (d *DockerOnTop) Get(request *volume.GetRequest) (*volume.GetResponse, erro
 func (d *DockerOnTop) Remove(request *volume.RemoveRequest) error {
 	log.Debugf("Request Remove: Name=%s. It will succeed regardless of the presence of the volume", request.Name)
 
-	// Expecting the volume to have been unmounted by this moment. If it isn't, the error will be reported
-	err := os.RemoveAll(d.dotRootDir + request.Name)
+	// If dockerd sent us this request, it means no containers are using the volume.
+	// Under normal operation, it means that mountpoint must not exist already.
+	//
+	// If it stil exists, though, we will try to recover now. If recovery fails, we report
+	// failure but the volume remains in a consistent state (nothing is removed).
+
+	mountpoint := d.mountpointdir(request.Name)
+
+	// Try to remove it in case it's not mounted
+	err := os.Remove(mountpoint)
+	if errors.Is(err, syscall.EBUSY) {
+		// Try to unmount
+		err = syscall.Unmount(mountpoint, syscall.MNT_FORCE|syscall.MNT_DETACH)
+		if err == nil {
+			log.Warningf("Unmounted (force+detach) volume %s, which is being removed", request.Name)
+		} else if os.IsNotExist(err) {
+			log.Warningf("The mountpoint %s existed and has literally just disappeared, what is going on?",
+				mountpoint)
+		} else {
+			log.Errorf("Volume %s to be removed is still mounted and cannot be unmounted: %v", err)
+			return internalError("failed to unmount volume mountpoint when removing", err)
+		}
+	} else if os.IsNotExist(err) {
+		// That's the default case: mountpoint does not exist
+	} else if err != nil {
+		log.Errorf("Volume %s to be removed does not seem mounted but still cannot be removed: %v",
+			request.Name, err)
+		return internalError("failed to remove the mountpoint directory of a seemingly unmounted volume",
+			err)
+	}
+
+	err = os.RemoveAll(d.dotRootDir + request.Name)
 	if err != nil {
-		log.Errorf("Failed to RemoveAll main directory: %v", err)
+		// This potentially leaves volume directory in an inconsistent state :(
+		log.Errorf("Failed to RemoveAll main directory for volume %s: %v", request.Name, err)
 		return internalError("failed to RemoveAll volume main directory", err)
 	}
 	return nil

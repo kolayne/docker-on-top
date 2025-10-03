@@ -139,16 +139,7 @@ func (d *DockerOnTop) volumeTreePreMount(volumeName string, discardUpper bool) e
 	if os.IsExist(err1) {
 		log.Warningf("Mountpoint of %s already exists. It might mean that the overlay is already mounted "+
 			"but the plugin failed to detect it...", volumeName)
-		// A possible thing to do here is try to `os.Remove` mountpoint/ and create it again. In case there's no funny
-		// business going on, there's not much difference: either way it will work.
-		//
-		// Otherwise, this additional action would be beneficial in that it wouldn't let mount an overlay for a volume
-		// in an invalid state, on the other hand, if the problem that caused the previous mount's failure is somehow
-		// resolved (but the stale overlay from the previous failed Mount is still there), the additional actions will
-		// prevent the volume from being used when it could be possible.
-		//
-		// Because I failed to come up even with a single scenario when such a stale overlay would be left, it's hard
-		// for me to argue which way is better. Feel free to share your opinion.
+		// It's not too bad, since we consider old mounts to be a harmless side effect.
 	}
 	err2 := os.Mkdir(workdir, os.ModePerm)
 	if os.IsExist(err2) {
