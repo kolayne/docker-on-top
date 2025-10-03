@@ -140,6 +140,7 @@ func (d *DockerOnTop) volumeTreePreMount(volumeName string, discardUpper bool) e
 		log.Warningf("Mountpoint of %s already exists. It might mean that the overlay is already mounted "+
 			"but the plugin failed to detect it...", volumeName)
 		// It's not too bad, since we consider old mounts to be a harmless side effect.
+		// For details, see the conceptual note at driver.go
 	}
 	err2 := os.Mkdir(workdir, os.ModePerm)
 	if os.IsExist(err2) {

@@ -189,7 +189,7 @@ func (d *DockerOnTop) Path(request *volume.PathRequest) (*volume.PathResponse, e
 func (d *DockerOnTop) Mount(request *volume.MountRequest) (*volume.MountResponse, error) {
 	log.Debugf("Request Mount: ID=%s, Name=%s", request.ID, request.Name)
 
-	thisVol, err := d.getVolumeInfo(request.Name)
+	_, err := d.getVolumeInfo(request.Name)
 	if os.IsNotExist(err) {
 		log.Debugf("Couldn't get volume info: %v", err)
 		return nil, errors.New("no such volume")
@@ -197,9 +197,6 @@ func (d *DockerOnTop) Mount(request *volume.MountRequest) (*volume.MountResponse
 		log.Errorf("Failed to retrieve metadata for volume %s: %v", request.Name, err)
 		return nil, internalError("failed to retrieve the volume's metadata", err)
 	}
-
-	mountpoint := d.mountpointdir(request.Name)
-	response := volume.MountResponse{Mountpoint: mountpoint}
 
 	// Synchronization. Take an exclusive lock on the activemounts/ dir of the volume to ensure that no parallel
 	// mounts/unmounts interfere. Note that it is crucial that the lock is held not only during the checks on other
@@ -215,43 +212,105 @@ func (d *DockerOnTop) Mount(request *volume.MountRequest) (*volume.MountResponse
 	}
 	defer activemountsdir.Close() // There is nothing I could do about the error (logging is performed inside `Close()` anyway)
 
+	err = d.activateVolume(request.Name, request.ID, activemountsdir)
+	if err == nil {
+		mountpoint := d.mountpointdir(request.Name)
+		response := volume.MountResponse{Mountpoint: mountpoint}
+		return &response, nil
+	} else {
+		return nil, err
+	}
+}
+
+func (d *DockerOnTop) Unmount(request *volume.UnmountRequest) error {
+	log.Debugf("Request Unmount: ID=%s, Name=%s", request.ID, request.Name)
+
+	// Synchronization. Taking an exclusive lock on activemounts/ of the volume so that parallel mounts/unmounts
+	// don't interfere.
+	// For more details, read the comment at the beginning of `DockerOnTop.Mount`.
+	var activemountsdir lockedFile
+	err := activemountsdir.Open(d.activemountsdir(request.Name))
+	if err != nil {
+		// The error is already logged and wrapped in `internalError` in lockedFile.go
+		return err
+	}
+	defer activemountsdir.Close() // There's nothing I can do about the error if it occurs
+
+	err = d.deactivateVolume(request.Name, request.ID, activemountsdir)
+	return err
+}
+
+func (d *DockerOnTop) Capabilities() *volume.CapabilitiesResponse {
+	log.Debug("Request Capabilities: plugin discovery")
+	return &volume.CapabilitiesResponse{Capabilities: volume.Capability{Scope: "volume"}}
+}
+
+// =======================================================================================
+// | CONCEPTUAL NOTE: an existing file at the active mounts directory is a guarantee of      |
+// | another container using the volume; the absense of files at the active mounts directory |
+// | is a guarantee that no container is using the volume.                                   |
+// |                                                                                         |
+// | The existence of a mountpoint directory or an overlay mounted on it is a side effect,   |
+// | which does not guarantee anything, and shall not be relied upon.                        |
+// =======================================================================================
+
+// activateVolume activates a volume: checks if other containers are using it already,
+// mounts it if needed, and handles all the internal state matters.
+//
+// The volume must exist, otherwise the function panics.
+//
+// Parameters:
+//
+//	volumeName: Name of the volume to be mounted
+//	requestId: Unique ID of the mount request
+//	activemountsdir: Folder where mounts are tracked (with an exclusive lock taken)
+//
+// Return:
+//
+//	err: An error, if encountered
+func (d *DockerOnTop) activateVolume(volumeName string, requestId string, activemountsdir lockedFile) error {
+	thisVol, err := d.getVolumeInfo(volumeName)
+	if err != nil {
+		panic(err)
+	}
+
 	_, err = activemountsdir.ReadDir(1) // Check if there are any files inside activemounts dir
 	if errors.Is(err, io.EOF) {
 		// No files => no other containers are using the volume. Need to mount the overlay
 
 		lowerdir := thisVol.BaseDirPath
-		upperdir := d.upperdir(request.Name)
-		workdir := d.workdir(request.Name)
+		upperdir := d.upperdir(volumeName)
+		workdir := d.workdir(volumeName)
+		mountpoint := d.mountpointdir(volumeName)
 
-		err = d.volumeTreePreMount(request.Name, thisVol.Volatile)
+		err = d.volumeTreePreMount(volumeName, thisVol.Volatile)
 		if err != nil {
 			// The error is already logged and wrapped in `internalError` by `d.volumeTreePreMount`
-			return nil, err
+			return err
 		}
 
 		options := "lowerdir=" + lowerdir + ",upperdir=" + upperdir + ",workdir=" + workdir
 
-		err = syscall.Mount("docker-on-top_"+request.Name, mountpoint, "overlay", 0, options)
+		err = syscall.Mount("docker-on-top_"+volumeName, mountpoint, "overlay", 0, options)
 		if os.IsNotExist(err) {
 			log.Errorf("Failed to mount overlay for volume %s because something does not exist: %v",
-				request.Name, err)
-			return nil, errors.New("failed to mount volume: something is missing (does the base directory " +
-				"exist?)")
+				volumeName, err)
+			return errors.New("failed to mount volume: something is missing (does the base directory exist?)")
 		} else if err != nil {
-			log.Errorf("Failed to mount overlay for volume %s: %v", request.Name, err)
-			return nil, internalError("failed to mount overlay", err)
+			log.Errorf("Failed to mount overlay for volume %s: %v", volumeName, err)
+			return internalError("failed to mount overlay", err)
 		}
 
-		log.Debugf("Mounted volume %s at %s", request.Name, mountpoint)
+		log.Debugf("Mounted volume %s at %s", volumeName, mountpoint)
 	} else if err == nil {
 		log.Debugf("Volume %s is already mounted for some other container. Indicating success without remounting",
-			request.Name)
+			volumeName)
 	} else {
 		log.Errorf("Failed to list the activemounts directory: %v", err)
-		return nil, internalError("failed to list activemounts/", err)
+		return internalError("failed to list activemounts/", err)
 	}
 
-	activemountFilePath := d.activemountsdir(request.Name) + request.ID
+	activemountFilePath := d.activemountsdir(volumeName) + requestId
 	f, err := os.Create(activemountFilePath)
 	if err == nil {
 		// We don't care about the file's contents
@@ -261,90 +320,62 @@ func (d *DockerOnTop) Mount(request *volume.MountRequest) (*volume.MountResponse
 			// Super weird. I can't imagine why this would happen.
 			log.Warningf("Active mount %s already exists (but it shouldn't...)", activemountFilePath)
 		} else {
-			// A really bad situation!
-			// We successfully mounted (`syscall.Mount`) the volume but failed to put information about the container
-			// using the volume. In the worst case (if we just created the volume) the following happens:
-			// Using the plugin, it is now impossible to unmount the volume (this container is not created, so there's
-			// no one to trigger `.Unmount()`) and impossible to remove (the directory mountpoint/ is a mountpoint, so
-			// attempting to remove it will fail with `syscall.EBUSY`).
-			// It is possible to mount the volume again: a new overlay will be mounted, shadowing the previous one.
-			// The new overlay will be possible to unmount but, as the old overlay remains, the Unmount method won't
-			// succeed because the attempt to remove mountpoint/ will result in `syscall.EBUSY`.
-			//
-			// Thus, a human interaction is required.
-			//
-			// (if it's not us who actually mounted the overlay, then the situation isn't too bad: no new container is
-			// started, the error is reported to the end user).
-			log.Criticalf("Failed to create active mount file: %v. If no other container was currently "+
-				"using the volume, this volume's state is now invalid. A human interaction or a reboot is required",
-				err)
-			return nil, fmt.Errorf("docker-on-top internal error: failed to create an active mount file: %w. "+
-				"The volume is now locked. Make sure that no other container is using the volume, then run "+
-				"`unmount %s` to unlock it. Human interaction is required. Please, report this bug",
-				err, mountpoint)
+			// We have successfully mounted the overlay but failed to mark that we are using it.
+			// If we use the volume now, we break the guarantee that we shall provide according
+			// to the above note. Thus, refusing with an error.
+			// We leave the overlay mounted as a harmless side effect.
+			log.Errorf("While mounting volume %s, failed to create active mount file: %v", volumeName, err)
+			return internalError("failed to create active mount file while mounting volume", err)
 		}
 	}
 
-	return &response, nil
+	return nil
 }
 
-func (d *DockerOnTop) Unmount(request *volume.UnmountRequest) error {
-	log.Debugf("Request Unmount: ID=%s, Name=%s", request.ID, request.Name)
+// deactivateVolume deactivates a volume: checks if other containers are still using it,
+// unmounts it if needed and handles all the internal state matters.
+//
+// The volume must exist, otherwise the function panics.
+//
+// Parameters:
+//
+//	volumeName: Name of the volume to be mounted
+//	requestId: Unique ID of the mount request
+//	activemountsdir: Folder where mounts are tracked (with an exclusive lock taken)
+func (d *DockerOnTop) deactivateVolume(volumeName string, requestId string, activemountsdir lockedFile) error {
+	// In accordance with the conceptual note above, we must first remove the file from the active mounts dir,
+	// and then attempt to unmount overlay. This ensures that if we crash mid-way, the volume state is consistent:
+	// a mounted overlay is a harmless side effect, but an active mount file may only exist if the volume is in use.
 
-	// Assuming the volume exists: the docker daemon won't let remove a volume that is still mounted
+	activemountFilePath := d.activemountsdir(volumeName) + requestId
 
-	// Synchronization. Taking an exclusive lock on activemounts/ of the volume so that parallel mounts/unmounts
-	// don't interfere.
-	// For more details, read the comment in the beginning of `DockerOnTop.Mount`.
-	var activemountsdir lockedFile
-	err := activemountsdir.Open(d.activemountsdir(request.Name))
-	if err != nil {
-		// The error is already logged and wrapped in `internalError` in lockedFile.go
-		return err
+	err := os.Remove(activemountFilePath)
+	if os.IsNotExist(err) {
+		log.Warningf("Failed to remove %s because it does not exist (but it should...)", activemountFilePath)
+	} else if err != nil {
+		log.Errorf("Failed to remove active mounts file %s. The volume %s is now stuck in the active state",
+			activemountFilePath, volumeName)
+		// The user most likely won't see this error message due to daemon not showing unmount errors to the
+		// `docker run` clients :((
+		return internalError("failed to remove the active mount file; the volume is now stuck in the active state", err)
 	}
-	defer activemountsdir.Close() // There's nothing I could do about the error if it occurs
 
-	dirEntries, readDirErr := activemountsdir.ReadDir(2) // Check if there is any _other_ container using the volume
-	if len(dirEntries) == 1 || errors.Is(readDirErr, io.EOF) {
-		// If just one entry or directory is empty, unmount overlay and clean up
-
-		err = syscall.Unmount(d.mountpointdir(request.Name), 0)
+	_, err = activemountsdir.ReadDir(1) // Check if there is any container using the volume (after us)
+	if errors.Is(err, io.EOF) {
+		err = syscall.Unmount(d.mountpointdir(volumeName), 0)
 		if err != nil {
-			log.Errorf("Failed to unmount %s: %v", d.mountpointdir(request.Name), err)
+			log.Errorf("Failed to unmount %s: %v", d.mountpointdir(volumeName), err)
 			return err
 		}
 
-		err = d.volumeTreePostUnmount(request.Name)
-		// Don't return yet. The above error will be returned later
-	} else if readDirErr == nil {
-		log.Debugf("Volume %s is still mounted in some other container. Indicating success without unmounting",
-			request.Name)
+		err = d.volumeTreePostUnmount(volumeName)
+		return err
+	} else if err == nil {
+		log.Debugf("Volume %s is still mounted in another container. Indicating success without unmounting",
+			volumeName)
+		return nil
 	} else {
 		log.Errorf("Failed to list the activemounts directory: %v", err)
-		return internalError("failed to list activemounts/", err)
+		return internalError("failed to list activemounts/ ", err)
 	}
-
-	activemountFilePath := d.activemountsdir(request.Name) + request.ID
-	err2 := os.Remove(activemountFilePath)
-	if os.IsNotExist(err2) {
-		log.Warningf("Failed to remove %s because it does not exist (but it should...)", activemountFilePath)
-	} else if err2 != nil {
-		// Another pretty bad situation. Even though we are no longer using the volume, it is seemingly in use by us
-		// because we failed to remove the file corresponding to this container.
-		log.Criticalf("Failed to remove the active mount file: %v. The volume is now considered used by a container "+
-			"that no longer exists", err)
-		// The user most likely won't see this error message due to daemon not showing unmount errors to the
-		// `docker run` clients :((
-		return fmt.Errorf("docker-on-top internal error: failed to remove the active mount file: %w. The volume is "+
-			"now considered used by a container that no longer exists. Human interaction is required: remove the file "+
-			"manually to fix the problem", err)
-	}
-
-	// Report an error during cleanup, if any
-	return err
-}
-
-func (d *DockerOnTop) Capabilities() *volume.CapabilitiesResponse {
-	log.Debug("Request Capabilities: plugin discovery")
-	return &volume.CapabilitiesResponse{Capabilities: volume.Capability{Scope: "volume"}}
 }
