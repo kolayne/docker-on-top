@@ -37,9 +37,6 @@ sudo -v
 template_cleanup() {
   $3 "$BASE" "$NAME"
   $5 "$BASE" "$NAME"
-  sudo umount /var/lib/docker-on-top/"$NAME"/mountpoint || :
-  sudo rmdir /var/lib/docker-on-top/"$NAME"/mountpoint  || :
-  sudo rm /var/lib/docker-on-top/"$NAME"/activemounts/* || :
   docker rm "$CONTAINER_ID"
   docker volume rm "$NAME"
   rm -rf "$BASE"
