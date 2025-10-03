@@ -184,8 +184,8 @@ func (d *DockerOnTop) Mount(request *volume.MountRequest) (*volume.MountResponse
 	}
 	defer activemountsdir.Close() // There is nothing I could do about the error (logging is performed inside `Close()` anyway)
 
-	_, readDirErr := activemountsdir.ReadDir(1) // Check if there are any files inside activemounts dir
-	if errors.Is(readDirErr, io.EOF) {
+	_, err = activemountsdir.ReadDir(1) // Check if there are any files inside activemounts dir
+	if errors.Is(err, io.EOF) {
 		// No files => no other containers are using the volume. Need to mount the overlay
 
 		lowerdir := thisVol.BaseDirPath
