@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -166,9 +167,11 @@ func (d *DockerOnTop) Remove(request *volume.RemoveRequest) error {
 	} else if os.IsNotExist(err) {
 		// That's the default case: mountpoint does not exist
 	} else if err != nil {
+		log.Errorf("Volume %s to be removed does not seem mounted but the mountpoint exists and cannot be removed: %v",
+			request.Name, err)
 		log.Errorf("Volume %s to be removed does not seem mounted but still cannot be removed: %v",
 			request.Name, err)
-		return internalError("failed to remove the mountpoint directory of a seemingly unmounted volume",
+		return internalError("failed to remove the mountpoint directory of a volume, which seems unmounted",
 			err)
 	}
 
@@ -310,21 +313,46 @@ func (d *DockerOnTop) activateVolume(volumeName string, requestId string, active
 		return internalError("failed to list activemounts/", err)
 	}
 
+	var activeMountInfo activeMount
 	activemountFilePath := d.activemountsdir(volumeName) + requestId
-	f, err := os.Create(activemountFilePath)
+	payload, err := os.ReadFile(activemountFilePath)
 	if err == nil {
-		// We don't care about the file's contents
-		_ = f.Close()
-	} else if os.IsExist(err) {
-		// Super weird. I can't imagine why this would happen.
-		log.Warningf("Active mount %s already exists (but it shouldn't...)", activemountFilePath)
+		// The file may exists from a previous mount when doing a docker cp on an already running
+		// container. Thus, no need to mount, just increment the counter.
+		err = json.Unmarshal(payload, &activeMountInfo)
+		if err != nil {
+			log.Errorf("Failed to decode active mount file %s : %v", activemountFilePath, err)
+			return internalError("failed to decode active mount file", err)
+		}
+	} else if os.IsNotExist(err) {
+		// Default case, we need to create a new active mount
+		activeMountInfo = activeMount{UsageCount: 0}
 	} else {
+		log.Errorf("Failed to read active mount file %s : %v", activemountFilePath, err)
+		return internalError("failed to read active mount file", err)
+	}
+
+	activeMountInfo.UsageCount++
+
+	// Here, intentionally separating file creation and writing (instead of using `os.WriteFile`)
+	// to perform more careful error handling
+	activemountFile, err := os.Create(activemountFilePath)
+	if err != nil {
 		// We have successfully mounted the overlay but failed to mark that we are using it.
 		// If we use the volume now, we break the guarantee that we shall provide according
 		// to the above note. Thus, refusing with an error.
 		// We leave the overlay mounted as a harmless side effect.
 		log.Errorf("While mounting volume %s, failed to create active mount file: %v", volumeName, err)
 		return internalError("failed to create active mount file while mounting volume", err)
+	}
+	defer activemountFile.Close()
+
+	_, err = activemountFile.Write(activeMountInfo.mustMarshal())
+	if err != nil {
+		// This is an unfortunate situation. We have either created or truncated the active
+		// mounts file, rendering it unreadable on future requests. There is not much we can do.
+		log.Errorf("Failed to write to the active mount file %s : %v", activemountFilePath, err)
+		return internalError("failed to write to the active mount file", err)
 	}
 
 	return nil
@@ -347,15 +375,47 @@ func (d *DockerOnTop) deactivateVolume(volumeName string, requestId string, acti
 
 	activemountFilePath := d.activemountsdir(volumeName) + requestId
 
-	err := os.Remove(activemountFilePath)
+	var activeMountInfo activeMount
+	payload, err := os.ReadFile(activemountFilePath)
 	if os.IsNotExist(err) {
-		log.Warningf("Failed to remove %s because it does not exist (but it should...)", activemountFilePath)
+		log.Warningf("Failed to read&remove %s because it does not exist (but it should...)", activemountFilePath)
+		// Assuming we are the only user with this mount ID
+		activeMountInfo = activeMount{UsageCount: 1}
 	} else if err != nil {
-		log.Errorf("Failed to remove active mounts file %s. The volume %s is now stuck in the active state",
+		log.Errorf("Failed to read active mounts file %s . The volume %s is now stuck in the active state",
 			activemountFilePath, volumeName)
-		// The user most likely won't see this error message due to daemon not showing unmount errors to the
+		// The user most likely won't see this error message because daemon does not show unmount errors to the
 		// `docker run` clients :((
-		return internalError("failed to remove the active mount file; the volume is now stuck in the active state", err)
+		return internalError("failed to read the active mouint file; the volume is now stuck in the active state", err)
+	} else {
+		err = json.Unmarshal(payload, &activeMountInfo)
+		if err != nil {
+			log.Errorf("Failed to decode active mount file %s : %v", activemountFilePath, err)
+			return internalError("failed to decode active mount file", err)
+		}
+	}
+
+	activeMountInfo.UsageCount--
+	if activeMountInfo.UsageCount == 0 {
+		err = os.Remove(activemountFilePath)
+		if os.IsNotExist(err) {
+			// It's ok, already logged above
+		} else if err != nil {
+			log.Errorf("Failed to remove active mounts file %s : %v; the volume is now stuck in the active state",
+				activemountFilePath, err)
+			// The user most likely won't see this error message because the daemon does not show unmount errors
+			// to the `docker run` clients :((
+			return internalError("failed to remove the active mount file; the volume is now stuck in the active state", err)
+		}
+	} else {
+		err = os.WriteFile(activemountFilePath, activeMountInfo.mustMarshal(), 0o644)
+		if err != nil {
+			log.Errorf("Failed to write to active mount file %s : %v; the file may have been corrupted")
+			return internalError("failed to write to active mount file (potentially corrupting)", err)
+		}
+		log.Debugf("Volume %s is still used by the same container. Indicating success without unmounting",
+			volumeName)
+		return nil
 	}
 
 	_, err = activemountsdir.ReadDir(1) // Check if there is any container using the volume (after us)
