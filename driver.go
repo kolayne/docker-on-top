@@ -315,18 +315,16 @@ func (d *DockerOnTop) activateVolume(volumeName string, requestId string, active
 	if err == nil {
 		// We don't care about the file's contents
 		_ = f.Close()
+	} else if os.IsExist(err) {
+		// Super weird. I can't imagine why this would happen.
+		log.Warningf("Active mount %s already exists (but it shouldn't...)", activemountFilePath)
 	} else {
-		if os.IsExist(err) {
-			// Super weird. I can't imagine why this would happen.
-			log.Warningf("Active mount %s already exists (but it shouldn't...)", activemountFilePath)
-		} else {
-			// We have successfully mounted the overlay but failed to mark that we are using it.
-			// If we use the volume now, we break the guarantee that we shall provide according
-			// to the above note. Thus, refusing with an error.
-			// We leave the overlay mounted as a harmless side effect.
-			log.Errorf("While mounting volume %s, failed to create active mount file: %v", volumeName, err)
-			return internalError("failed to create active mount file while mounting volume", err)
-		}
+		// We have successfully mounted the overlay but failed to mark that we are using it.
+		// If we use the volume now, we break the guarantee that we shall provide according
+		// to the above note. Thus, refusing with an error.
+		// We leave the overlay mounted as a harmless side effect.
+		log.Errorf("While mounting volume %s, failed to create active mount file: %v", volumeName, err)
+		return internalError("failed to create active mount file while mounting volume", err)
 	}
 
 	return nil
