@@ -44,7 +44,7 @@ git tag "v$VERSION"
 
 echo -n '-dirty' >> "$VERSION_FILE"
 git add "$VERSION_FILE"
-chronic git commit -m "Restored the '-dirty' version"
+chronic git commit -m "Restore the '-dirty' version"
 
 
 git log --compact-summary -4
